@@ -1,0 +1,12 @@
+.venv/
+store/
+tgdata/
+*.session
+*.session-journal
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+config.yaml
+.env
+.git/

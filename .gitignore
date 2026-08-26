@@ -1,0 +1,22 @@
+# --- secrets and live data: never commit these ---
+.env
+config.yaml
+tgdata/
+store/
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+*.tmp
+
+# --- local tooling ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
+.DS_Store

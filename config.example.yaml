@@ -1,0 +1,61 @@
+# Matrix <-> Telegram bridge configuration (interactive, bidirectional).
+# Copy to config.yaml and fill in. Secrets can also come from env vars
+# (MATRIX_ACCESS_TOKEN, TELEGRAM_API_ID, TELEGRAM_API_HASH, ...), which take
+# precedence — preferred for Docker / production.
+
+matrix:
+  homeserver: "https://matrix.org"
+  user_id: "@you:matrix.org"          # the account you type with in Element
+  control_room: "!yourRoomId:matrix.org"  # room used to control TG + see messages
+  access_token: ""                     # or password
+  password: ""
+  device_id: "MATRIX_TG_BRIDGE"
+  store_path: "./store"
+  # Written by `python -m bridge.mxlogin`; when present it OVERRIDES the
+  # homeserver/user_id/token/control_room above. Blank = next to state_path.
+  creds_path: ""
+  # Optional: a Space id. When set, every Telegram chat gets its own Matrix
+  # room inside this space (created lazily on first relayed message); the
+  # control room keeps commands + acts as a fallback. Blank = single room.
+  space: ""
+
+# One outbound proxy for BOTH Matrix and Telegram.
+#   "system" (default, = blank)  inherit ALL_PROXY / HTTPS_PROXY / HTTP_PROXY,
+#                                then the Windows WinINET proxy setting
+#   "none"                       deliberately direct
+#   "socks5h://host:port"        explicit; prefer socks5h (DNS at the proxy)
+# A full-tunnel VPN sets no system proxy, so "system" finding nothing is the
+# expected result there. If a proxy IS set but unusable, the bridge EXITS
+# rather than connecting directly.
+proxy:
+  url: "system"
+
+telegram:
+  # api_id / api_hash from https://my.telegram.org -> API development tools.
+  api_id: 0
+  api_hash: ""
+  session: "telegram.session"          # created once via `python -m bridge.tglogin`
+  phone: ""                             # optional, e.g. "+8613800138000"
+  # Reported to Telegram instead of this machine's real platform/uname.
+  device_model: "Desktop"
+  system_version: "Windows 10"
+  app_version: "5.3.1"
+  lang_code: "en"
+
+options:
+  command_prefix: "!tg"                 # in-room command prefix
+  default_target: ""                    # optional initial active target
+  state_path: "./state.json"            # persists active target + mute choices
+  timezone: "UTC"                       # IANA tz for `!tg at` (e.g. Asia/Shanghai)
+
+# --- How it works, once running ---
+# In the control room (typing as your Matrix account) you can:
+#   !tg list                 list every Telegram chat your account is in
+#   !tg use <name|@user|id>  set the current send target
+#   !tg who                  show the current target
+#   @<target> <message>      send one message to <target> (doesn't change current)
+#   <message> / <image>      send to the current target
+#   !tg read <target> [N]    show recent messages from a chat
+#   !tg mute / unmute <t>    choose which sources notify you
+# Every message your account receives on Telegram (any group/channel/DM) is
+# posted into this room, tagged with its source.

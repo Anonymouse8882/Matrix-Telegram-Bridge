@@ -1,0 +1,31 @@
+services:
+  bridge:
+    build: .
+    image: matrix-telegram-bridge:latest
+    container_name: matrix-telegram-bridge
+    restart: unless-stopped
+    environment:
+      # Prefer supplying secrets here (via the .env file) rather than in
+      # config.yaml. These override whatever the mounted config contains.
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
+      MATRIX_USER_ID: ${MATRIX_USER_ID:-}
+      MATRIX_CONTROL_ROOM: ${MATRIX_CONTROL_ROOM:-}
+      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
+      MATRIX_PASSWORD: ${MATRIX_PASSWORD:-}
+      # Telegram user account (MTProto)
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
+      # Outbound proxy for both sides, e.g. socks5h://host.docker.internal:1080
+      BRIDGE_PROXY: ${BRIDGE_PROXY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BRIDGE_CONFIG: /config/config.yaml
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      # Host-mounted so the Matrix store AND the Telegram session file persist.
+      # config.yaml points store_path and session at /data/...
+      - ./tgdata:/data
+    # First-time Telegram login (interactive) — run once before `up`:
+    #   docker compose run --rm --entrypoint python bridge -m bridge.tglogin --config /config/config.yaml
+    # Change the Matrix/Element account at any time (then `restart`):
+    #   docker compose run --rm --entrypoint python bridge -m bridge.mxlogin --config /config/config.yaml

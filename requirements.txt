@@ -1,0 +1,7 @@
+matrix-nio>=0.24.0
+telethon>=1.36.0
+PyYAML>=6.0
+tzdata>=2024.1
+# SOCKS proxy transports: aiohttp-socks for matrix-nio, python-socks for Telethon.
+aiohttp-socks>=0.8.4
+python-socks[asyncio]>=2.4.3
