@@ -27,6 +27,7 @@ from .accounts import TelegramAccount
 from .adapters.matrix_rooms import MatrixRooms
 from .adapters.outbound_scheduler import OutboundScheduler
 from .adapters.telegram_expirer import TelegramExpirer
+from .adapters.telegram_quotly import QuotLyQuoter
 from .adapters.telegram_user_sink import TelegramUserSink
 from .adapters.telegram_user_source import TelegramUserSource
 from .config import Config
@@ -98,6 +99,8 @@ class AccountRuntime:
 
         self.sink = TelegramUserSink(0, "", client=client)
         self.source = TelegramUserSource(client)
+        # Only used while this account's forward mode is QuotLy.
+        self.quoter = QuotLyQuoter(client, bot=cfg.options.quotly_bot)
         # Per-chat rooms need a Space to live in; without one this account
         # relays into the control room, which is degraded but never lossy.
         self.rooms = (
@@ -118,6 +121,7 @@ class AccountRuntime:
             reply_map=self.reply_map,
             control_room=self.control_room,
             links=self.links,
+            quoter=self.quoter,
         )
         self.relay = Relay(
             matrix_sink=matrix_sink,

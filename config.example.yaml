@@ -47,6 +47,7 @@ options:
   default_target: ""                    # optional initial active target
   state_path: "./state.json"            # persists active target + mute choices
   timezone: "UTC"                       # IANA tz for `!tg at` (e.g. Asia/Shanghai)
+  quotly_bot: "@QuotLyBot"              # bot used by `!tg fmsg QuotLy`
 
 # --- How it works, once running ---
 # In the control room (typing as your Matrix account) you can:

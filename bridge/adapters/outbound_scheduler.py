@@ -6,6 +6,9 @@ Handles, in one place:
   * scheduled delivery at an absolute time (`!tg at`),
 then applies per-kind self-destruct after the message actually goes out.
 
+The account's forward mode is honoured here too: in QuotLy mode plain text is
+handed to the quoter, which puts a quote sticker in the chat instead.
+
 Deferred sends are persisted (media is stored as a Matrix reference and
 re-fetched at send time, not held as bytes) so they survive a restart; a
 background sweeper delivers anything due.
@@ -22,9 +25,9 @@ from typing import Callable, Optional
 
 from ..core.messagelinks import MessageLinks
 from ..core.models import MediaRef, MessageKind, OutboundMessage, TelegramTarget
-from ..core.ports import MediaFetcher, MessageExpirer, MessageSink
+from ..core.ports import MediaFetcher, MessageExpirer, MessageSink, StickerQuoter
 from ..core.replymap import ReplyMap, ReplyRef
-from ..core.state import BridgeState
+from ..core.state import FORWARD_QUOTLY, BridgeState
 from .jsonfile import load_json_list, save_json_list
 
 log = logging.getLogger(__name__)
@@ -47,6 +50,7 @@ class OutboundScheduler:
         reply_map: ReplyMap | None = None,
         control_room: str = "",
         links: MessageLinks | None = None,
+        quoter: StickerQuoter | None = None,
         interval: float = 5.0,
         clock: Callable[[], float] = time.time,
         rng: Callable[[], float] = random.random,
@@ -59,6 +63,7 @@ class OutboundScheduler:
         self._reply_map = reply_map
         self._control_room = control_room
         self._links = links
+        self._quoter = quoter  # None = QuotLy mode unavailable, always plain
         self._interval = interval
         self._now = clock
         self._rng = rng
@@ -120,8 +125,7 @@ class OutboundScheduler:
                 filename=message.media.filename,
                 mimetype=message.media.mimetype,
             )
-        target = TelegramTarget(chat_id=str(chat_id), reply_to=message.reply_to)
-        msg_id = await self._tg.deliver(target, outbound)
+        msg_id = await self._send(chat_id, outbound)
         if not msg_id:
             return
         # Map the originating Matrix event to this TG message so the owner can
@@ -147,6 +151,37 @@ class OutboundScheduler:
                 matrix_room=origin_room or self._control_room or None,
                 matrix_event=origin_event,
             )
+
+    async def _send(self, chat_id: int, message: OutboundMessage) -> Optional[str]:
+        """Hand the message to Telegram the way the forward mode asks for.
+
+        QuotLy mode only applies to plain typed text; media, and a quote the
+        bot could not produce, fall back to the ordinary send. An unstyled
+        message is a much smaller failure than a missing one.
+        """
+        if self._use_quotly(message):
+            try:
+                msg_id = await self._quoter.quote_send(
+                    chat_id, message.text or "", reply_to=message.reply_to
+                )
+            except Exception:  # noqa: BLE001 - never lose the message over styling
+                log.exception("quotly render failed for %s; sending as typed",
+                              chat_id)
+                msg_id = None
+            if msg_id:
+                return msg_id
+            log.info("quotly unavailable for %s; sending as typed", chat_id)
+        target = TelegramTarget(chat_id=str(chat_id), reply_to=message.reply_to)
+        return await self._tg.deliver(target, message)
+
+    def _use_quotly(self, message: OutboundMessage) -> bool:
+        return (
+            self._quoter is not None
+            and self._state.forward_mode() == FORWARD_QUOTLY
+            and message.kind is MessageKind.TEXT
+            and not message.media_bytes
+            and bool((message.text or "").strip())
+        )
 
     def clear(self) -> None:
         """Drop every queued send (Matrix account change).

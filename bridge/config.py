@@ -77,6 +77,8 @@ class Options:
     default_target: str = ""  # optional initial active target
     state_path: str = "./state.json"  # where active-target / mutes persist
     timezone: str = "UTC"  # IANA name, used for `!tg at` scheduled sends
+    # Bot that renders a message as a quote sticker, for `!tg fmsg QuotLy`.
+    quotly_bot: str = "@QuotLyBot"
 
 
 @dataclass
@@ -130,6 +132,7 @@ def load_config(path: str) -> Config:
         default_target=str(opt.get("default_target", "")),
         state_path=str(opt.get("state_path", "./state.json")),
         timezone=str(opt.get("timezone", "UTC")),
+        quotly_bot=str(opt.get("quotly_bot", "@QuotLyBot") or "@QuotLyBot"),
     )
 
     cfg = Config(matrix=matrix, telegram=telegram, options=options, proxy=proxy)

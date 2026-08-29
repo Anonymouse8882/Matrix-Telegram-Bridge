@@ -37,7 +37,7 @@ from .ports import (
 from .render import note, panel
 from .replymap import ReplyRef
 from .transformer import info_lines
-from .state import BridgeState
+from .state import FORWARD_NORMAL, FORWARD_QUOTLY, BridgeState
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,17 @@ _KIND_ALIASES = {
     "bot": "bot", "机器人": "bot", "bots": "bot",
     "group": "group", "群": "group", "群组": "group",
     "channel": "channel", "频道": "channel",
+}
+
+# `fmsg` modes. The names are the ones the user types, in any case.
+_FMSG_ALIASES = {
+    "normal": FORWARD_NORMAL, "普通": FORWARD_NORMAL, "正常": FORWARD_NORMAL,
+    "off": FORWARD_NORMAL,
+    "quotly": FORWARD_QUOTLY, "quote": FORWARD_QUOTLY, "语录": FORWARD_QUOTLY,
+}
+_FMSG_TITLE = {
+    FORWARD_NORMAL: "Normal（原样发送）",
+    FORWARD_QUOTLY: "QuotLy（转成语录贴纸）",
 }
 
 _BULK_SCOPES = {
@@ -96,6 +107,7 @@ _HELP_LINES = [
     "mute/unmute <目标>       是否提醒（仍显示）· muted 查看",
     "",
     "at <YYYY-MM-DD> <HH:MM[:SS]> <内容>   定时发到当前目标",
+    "fmsg [Normal|QuotLy]     发送模式：原样发送 / 转成 @QuotLyBot 语录贴纸",
     "delay                    查看发送延迟",
     "delay <固定> [随机]      设置延迟, 如 delay 5s 30s (0=关)",
     "selfdestruct [<类型> <时长>]  自毁设置(类型 私信/群组/频道)",
@@ -567,6 +579,7 @@ class Dispatcher:
         # One row per command: aliases -> the call. Adding a command is adding
         # a row (plus a _HELP_LINES entry), not extending a branch chain.
         table = {
+            ("fmsg", "发送模式"): lambda: self._cmd_fmsg(bundle, arg, room),
             ("delay",): lambda: self._cmd_delay(bundle, arg, extra, room),
             ("selfdestruct",): lambda: self._cmd_selfdestruct(bundle, arg, extra, room),
             ("settings", "status", "config"): lambda: self._cmd_settings(bundle, room),
@@ -896,6 +909,36 @@ class Dispatcher:
                 continue
             return naive.replace(tzinfo=self._tz).timestamp()
         return None
+
+    async def _cmd_fmsg(self, bundle: AccountBundle, mode_arg: str,
+                        room: str) -> None:
+        """How this account's outgoing messages are rendered."""
+        current = bundle.state.forward_mode()
+        if not mode_arg:
+            await self._reply_in(room, panel("发送模式（fmsg）", [
+                f"当前：{_FMSG_TITLE.get(current, current)}",
+                "",
+                "Normal   原样发送你输入的内容",
+                "QuotLy   先发给 @QuotLyBot 生成语录贴纸，删掉与机器人的往来消息后，"
+                "把贴纸发给目标",
+                "",
+                f"设置：{self._prefix} fmsg <Normal|QuotLy>",
+            ]))
+            return
+        mode = _FMSG_ALIASES.get(mode_arg.strip().lower())
+        if mode is None:
+            await self._reply_in(room, note(
+                f"模式只能是 Normal 或 QuotLy。用法：{self._prefix} fmsg <Normal|QuotLy>"
+            ))
+            return
+        bundle.state.set_forward_mode(mode)
+        if mode == FORWARD_QUOTLY:
+            await self._reply_in(room, note(
+                "🖋 发送模式：QuotLy。之后发出的纯文字会先经 @QuotLyBot 转成语录贴纸"
+                "再发给目标（图片/文件仍原样发送；机器人没回应时按原文发送）。"
+            ))
+        else:
+            await self._reply_in(room, note("发送模式：Normal（原样发送）。"))
 
     async def _cmd_delay(self, bundle: AccountBundle, fixed_s: str,
                          random_s: str, room: str) -> None:
@@ -1455,11 +1498,13 @@ class Dispatcher:
             else f"固定 {format_duration(f)} + 随机 0~{format_duration(r)}"
         )
         sd = bundle.state.self_destruct_all()
+        mode = bundle.state.forward_mode()
         accounts = self._accounts.accounts()
         lines = [
             f"Telegram 账户：{len(accounts)} 个在线",
             f"当前账户：{bundle.account.label if bundle else '（无）'}",
             f"当前发送目标：{active_name}",
+            f"发送模式：{_FMSG_TITLE.get(mode, mode)}",
             f"发送延迟：{delay_line}",
             "自毁：",
             "  " + " · ".join(

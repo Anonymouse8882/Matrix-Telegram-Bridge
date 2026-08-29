@@ -121,6 +121,23 @@ class TelegramDirectory(Protocol):
 
 
 @runtime_checkable
+class StickerQuoter(Protocol):
+    """Turns owner-typed text into a quote sticker and sends *that* instead.
+
+    The whole round trip (ask the quote bot, wait for its sticker, clean the
+    bot chat up, send the sticker on) lives behind this one call, because only
+    the Telegram adapter owns the client it needs.
+    """
+
+    async def quote_send(
+        self, chat_id: int, text: str, reply_to: Optional[int] = None
+    ) -> Optional[str]:
+        """Return the sticker's Telegram message id, or None if no sticker
+        could be made — the caller then sends the text as it was typed, since
+        an undelivered message is worse than an unstyled one."""
+
+
+@runtime_checkable
 class RoomCreator(Protocol):
     """Creates a dedicated Matrix room for one Telegram conversation."""
 

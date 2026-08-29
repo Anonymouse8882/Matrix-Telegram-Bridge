@@ -1,5 +1,6 @@
-"""Mutable bridge state: the active outgoing target per room, and which
-Telegram sources are muted (delivered without a notification).
+"""Mutable bridge state: the active outgoing target per room, which Telegram
+sources are muted (delivered without a notification), and how outgoing
+messages are rendered.
 
 Kept out of the adapters so the control logic can be tested without any I/O.
 Optionally persisted to a small JSON file so choices survive a restart.
@@ -13,6 +14,12 @@ import os
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+# Outgoing render modes. "quotly" routes owner-typed text through the QuotLy
+# bot first, so what lands in the target chat is a quote sticker.
+FORWARD_NORMAL = "normal"
+FORWARD_QUOTLY = "quotly"
+FORWARD_MODES = (FORWARD_NORMAL, FORWARD_QUOTLY)
 
 
 class BridgeState:
@@ -29,6 +36,9 @@ class BridgeState:
         self._delay_fixed: int = 0
         self._delay_random: int = 0
         self._command_prefix: str = ""  # empty = use the configured default
+        # How outgoing messages are rendered on the way to Telegram:
+        # "normal" (as typed) or "quotly" (as a QuotLy quote sticker).
+        self._forward_mode: str = FORWARD_NORMAL
         self._load()
 
     # -- command prefix (overrides the configured default when set) ----------
@@ -38,6 +48,18 @@ class BridgeState:
 
     def set_command_prefix(self, prefix: str) -> None:
         self._command_prefix = prefix.strip()
+        self._save()
+
+    # -- forward mode (how outgoing messages are rendered) -------------------
+
+    def forward_mode(self) -> str:
+        return self._forward_mode
+
+    def set_forward_mode(self, mode: str) -> None:
+        """Set the mode. An unknown name falls back to normal rather than
+        leaving a value nothing downstream knows how to render."""
+        mode = (mode or "").strip().lower()
+        self._forward_mode = mode if mode in FORWARD_MODES else FORWARD_NORMAL
         self._save()
 
     # -- active outgoing target ---------------------------------------------
@@ -121,6 +143,10 @@ class BridgeState:
             self._delay_fixed = int(data.get("delay_fixed", 0))
             self._delay_random = int(data.get("delay_random", 0))
             self._command_prefix = str(data.get("command_prefix", ""))
+            saved_mode = str(data.get("forward_mode", FORWARD_NORMAL)).lower()
+            self._forward_mode = (
+                saved_mode if saved_mode in FORWARD_MODES else FORWARD_NORMAL
+            )
         except Exception:  # noqa: BLE001 - corrupt state shouldn't crash startup
             log.exception("failed to load state from %s", self._path)
 
@@ -144,6 +170,7 @@ class BridgeState:
                         "delay_fixed": self._delay_fixed,
                         "delay_random": self._delay_random,
                         "command_prefix": self._command_prefix,
+                        "forward_mode": self._forward_mode,
                     },
                     fh,
                     ensure_ascii=False,

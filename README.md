@@ -123,6 +123,7 @@ Type these in the control room (prefix configurable, default `!tg`):
 | `!tg watching` | List the allow-list |
 | `!tg mute <target>` / `unmute` / `muted` | Choose which sources notify you (muted ones are still shown) |
 | `!tg at <YYYY-MM-DD> <HH:MM[:SS]> <msg>` | Send to the current target at an absolute time |
+| `!tg fmsg [Normal\|QuotLy]` | Show or set how outgoing text is rendered — as typed, or as a [QuotLy](#quotly-send-mode) quote sticker |
 | `!tg delay [<fixed> [random]]` | Show or set an outgoing send delay, e.g. `delay 5s 30s` (`0` disables) |
 | `!tg selfdestruct [<kind> <duration>]` | Auto-delete your relayed messages on Telegram after a TTL, per kind (the Matrix copy is marked, not deleted) |
 | `!tg delMsg <target\|AllUser\|AllGroup\|AllChannel\|AllChat>` | Delete **your own** messages — irreversible, needs a `confirm` token (no target needed in a per-chat room, see below) |
@@ -196,6 +197,42 @@ when it attaches a link preview — are ignored.
 
 The allow-list matters: without it, busy channels flood the room hard enough to
 hit matrix.org rate limits.
+
+## QuotLy send mode
+
+`!tg fmsg QuotLy` changes what lands in the target chat: instead of your text,
+a quote **sticker** rendered by [@QuotLyBot](https://t.me/QuotLyBot). Per
+account, persisted, and `!tg fmsg Normal` puts it back.
+
+Telegram has no API for this, so the account does what a person would:
+
+1. sends the text to the bot,
+2. waits for the sticker it answers with,
+3. sends that sticker to the real target, and
+4. deletes both messages (yours and the bot's) from the bot chat, for both
+   sides — the round trip leaves nothing behind.
+
+Worth knowing:
+
+* **Text only.** Images, files and captions are sent as they always were —
+  only a plain typed message is quoted.
+* **It never loses a message.** If the bot is slow, silent, or answers with
+  something that isn't a sticker, the message is sent as typed and the reason
+  is logged. An unstyled message beats a missing one.
+* **Everything else still applies.** Send delay, `!tg at`, self-destruct,
+  reply threading and delete-sync all work — they act on the sticker, since
+  that is the message that actually exists in the chat.
+* **Don't `watch` @QuotLyBot.** Watching it would relay this traffic into
+  Matrix for the second or two before it is deleted.
+* **The bot sees what you quote.** It has to, to render it. That is one more
+  party than a normal send, so it is opt-in and off by default.
+
+The bot is configurable, for a fork or a self-hosted clone:
+
+```yaml
+options:
+  quotly_bot: "@QuotLyBot"
+```
 
 ## Per-chat rooms (Space mode)
 
