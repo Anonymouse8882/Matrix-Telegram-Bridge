@@ -196,3 +196,93 @@ async def test_deferred_send_persists_across_instances(tmp_path):
     await sched2._sweep()
     assert len(tg2.deliveries) == 1
     assert tg2.deliveries[0][1].text == "later"
+
+
+class InputUserDeactivatedError(Exception):
+    """Stands in for Telethon's error of the same name (matched by name)."""
+
+
+class DeadPeerSink:
+    """A sink whose peer no longer exists — every attempt fails identically."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def deliver(self, target, message):
+        self.attempts += 1
+        raise InputUserDeactivatedError()
+
+    async def close(self) -> None:
+        pass
+
+
+def _queue(tmp_path, tg, **kw):
+    clock = Clock()
+    sched = OutboundScheduler(
+        tg, FakeFetcher(), BridgeState(), FakeExpirer(),
+        str(tmp_path / "outbox.json"), interval=0.01, clock=clock,
+        rng=lambda: 0.0, **kw,
+    )
+    return sched, clock
+
+
+async def test_a_send_to_a_deleted_account_is_not_retried(tmp_path):
+    """Four more attempts over ten minutes would fail exactly the same way."""
+    tg = DeadPeerSink()
+    sched, clock = _queue(tmp_path, tg)
+    await sched.submit(111, "user", _text(), at=1500.0)
+
+    clock.t = 1501.0
+    await sched._sweep()
+
+    assert tg.attempts == 1
+    assert sched._pending == []
+
+
+async def test_a_dropped_send_is_reported_with_the_room_it_came_from(tmp_path):
+    """Nobody is looking at a queued send when it fails, so it has to speak up."""
+    reported = []
+    sched, clock = _queue(tmp_path, DeadPeerSink(), control_room="!ctl:hs")
+    sched.set_failure_handler(
+        lambda chat, name, room, exc: reported.append((chat, name, room, exc))
+    )
+    await sched.submit(111, "user", _text(), at=1500.0,
+                       target_name="小明", origin_room="!r1:hs")
+
+    clock.t = 1501.0
+    await sched._sweep()
+
+    chat, name, room, exc = reported[0]
+    assert (chat, name, room) == (111, "小明", "!r1:hs")
+    assert isinstance(exc, InputUserDeactivatedError)
+
+
+async def test_a_send_given_up_on_after_retries_is_reported_too(tmp_path):
+    reported = []
+    tg = FailingSink(failures=99)
+    sched, clock = _queue(tmp_path, tg, control_room="!ctl:hs")
+    sched.set_failure_handler(
+        lambda chat, name, room, exc: reported.append(room)
+    )
+    await sched.submit(111, "user", _text(), at=1500.0, target_name="小明")
+
+    for _ in range(10):
+        clock.t += 10_000.0
+        await sched._sweep()
+
+    assert tg.attempts == 5
+    assert reported == ["!ctl:hs"]   # no origin room: fall back to the account's
+
+
+async def test_a_broken_reporter_does_not_stop_the_queue(tmp_path):
+    def boom(*_args):
+        raise RuntimeError("reporter is broken (test)")
+
+    sched, clock = _queue(tmp_path, DeadPeerSink())
+    sched.set_failure_handler(boom)
+    await sched.submit(111, "user", _text(), at=1500.0)
+
+    clock.t = 1501.0
+    await sched._sweep()          # must not raise
+
+    assert sched._pending == []

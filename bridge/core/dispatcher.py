@@ -36,12 +36,20 @@ from .ports import (
 )
 from .render import note, panel
 from .replymap import ReplyRef
+from .tgerrors import failure_reason
 from .transformer import info_lines
 from .state import FORWARD_NORMAL, FORWARD_QUOTLY, BridgeState
 
 log = logging.getLogger(__name__)
 
 _KIND_ICON = {"user": "👤", "bot": "🤖", "group": "👥", "channel": "📢"}
+# Why a chat is gone, in the owner's words. Same vocabulary as `presence()` and
+# `failure_reason()`, so a chat found dead by a sweep and one found dead by a
+# refused send are reported identically. Two phrasings because the same fact
+# reads differently after a name ("小明（账户已注销）") and after a colon
+# ("发送失败：对方账户已注销"), and there it must be clear whose account it was.
+_GONE_REASON = {"deleted": "账户已注销", "gone": "对话已不存在"}
+_GONE_SEND_FAIL = {"deleted": "对方账户已注销", "gone": "该对话已不存在"}
 _KIND_TITLE = {"user": "私信", "bot": "机器人", "group": "群组", "channel": "频道"}
 # The order kinds are listed in, everywhere.
 _KINDS = ("user", "bot", "group", "channel")
@@ -99,8 +107,9 @@ _HELP_LINES = [
     "                    （建了专属房间的群/频道自动转发，无需 watch）",
     "avatar [目标|all]   同步 TG 头像到专属房间（建房时自动设一次）",
     "                    专属房内直接 avatar 即同步该对话",
-    "check [目标|all]    检查对话是否已被删除，房间名标记「已删除」",
+    "check [目标|all]    检查对话是否还在，房名标记【已注销】/（已删除）",
     "                    （对方注销账户/对话不存在时；恢复后自动还原房名）",
+    "                    发送失败若是对方已注销，会自动标记，无需手动 check",
     "watch/unwatch <群/频道/机器人>  接收白名单增删",
     "                    （真人私信默认转发；机器人必须 watch 才转发）",
     "watching                 查看接收白名单",
@@ -501,9 +510,9 @@ class Dispatcher:
                 origin_event=origin_event, target_name=name,
                 origin_room=origin_room or self._room,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             log.exception("submit to %s failed", chat_id)
-            await self._reply_in(reply_room, note(f"发送到 {name} 失败，见日志。"))
+            await self._report_send_failure(bundle, chat_id, name, reply_room, exc)
             return
         if status == "scheduled" and when is not None:
             await self._reply_in(
@@ -513,6 +522,77 @@ class Dispatcher:
             await self._reply_in(
                 reply_room, note(f"时间已过，已立即发送到 {name}。")
             )
+
+    async def on_send_failed(
+        self,
+        tg_id: int,
+        chat_id: int,
+        name: str,
+        origin_room: str,
+        exc: BaseException,
+    ) -> None:
+        """A *queued* send was given up on (see OutboundScheduler).
+
+        The immediate path reports its own failures, where the owner is still
+        looking; a delayed one fails minutes later with nobody watching, so it
+        gets the same explanation — and the same room mark — after the fact.
+        """
+        bundle = self._accounts.by_query(str(tg_id))
+        if bundle is None:
+            log.warning("no account %s to report a failed send for", tg_id)
+            return
+        room = origin_room or bundle.control_room or self._room
+        await self._report_send_failure(
+            bundle, chat_id, name or str(chat_id), room, exc
+        )
+
+    async def _report_send_failure(
+        self,
+        bundle: AccountBundle,
+        chat_id: int,
+        name: str,
+        reply_room: str,
+        exc: BaseException,
+    ) -> None:
+        """Say *why* a send failed, and flag the room when the chat is dead.
+
+        "见日志" is the right answer only when nothing better is known. When
+        Telegram itself says the other side deleted their account, the message
+        is never going to arrive — so the owner is told that in the room they
+        typed in, and the chat's room is renamed on the spot instead of waiting
+        for someone to think of running `check`.
+        """
+        reason = failure_reason(exc)
+        if reason == "gone":
+            # A peer-invalid error alone is not proof: a stale access hash
+            # looks the same. Let the account itself say whether the chat is
+            # really gone before any room gets renamed over it.
+            status = await self._presence(bundle, chat_id)
+            reason = status if status in _GONE_REASON else ""
+        if reason == "self":
+            await self._reply_in(reply_room, note(
+                f"发送到 {name} 失败：本 Telegram 账户已被注销或封禁，"
+                f"需重新登录（{bundle.account.label}）。"
+            ))
+            return
+        if reason not in _GONE_REASON:
+            await self._reply_in(reply_room, note(f"发送到 {name} 失败，见日志。"))
+            return
+
+        _marked, renamed = await self._mark_gone(bundle, chat_id, reason, name)
+        lines = [f"❌ 发送到 {name} 失败：{_GONE_SEND_FAIL[reason]}，消息无法送达。"]
+        if renamed:
+            lines.append(f"已把房间改名为「{renamed}」。")
+        lines.append("（房间和聊天记录都保留；对方若恢复，收到新消息会自动还原房名）")
+        await self._reply_in(reply_room, note("\n".join(lines)))
+
+    async def _presence(self, bundle: AccountBundle, chat_id: int) -> str:
+        """`presence()` without letting its own failure become the answer."""
+        try:
+            return await bundle.directory.presence(chat_id)
+        except Exception:  # noqa: BLE001
+            log.exception("presence check failed for %s", chat_id)
+            return "ok"
 
     def _fmt(self, epoch: float) -> str:
         return datetime.fromtimestamp(epoch, self._tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -1166,11 +1246,45 @@ class Dispatcher:
 
     # How a room whose Telegram chat is gone is renamed. The original name is
     # kept inside it so the room stays findable, and so the mark can be undone.
+    # A deactivated account gets its own wording: "deleted the chat" and "left
+    # Telegram entirely" are different facts, and only the second one is final.
     DELETED_PREFIX = "🗑 "
     DELETED_SUFFIX = "（已删除）"
+    DEACTIVATED_SUFFIX = "【已注销】"
 
-    def _deleted_name(self, name: str) -> str:
-        return f"{self.DELETED_PREFIX}{name}{self.DELETED_SUFFIX}"
+    def _gone_name(self, name: str, reason: str = "gone") -> str:
+        suffix = (
+            self.DEACTIVATED_SUFFIX if reason == "deleted" else self.DELETED_SUFFIX
+        )
+        return f"{self.DELETED_PREFIX}{name}{suffix}"
+
+    async def _mark_gone(
+        self, bundle: AccountBundle, chat_id: int, reason: str, name: str = ""
+    ) -> tuple[bool, str]:
+        """Flag a chat's room as gone.
+
+        Returns (whether this call is what changed the mark, the room's new
+        name — "" if nothing was renamed), so the caller can report only what
+        actually happened.
+
+        The mark is recorded first: the registry is what makes the rename
+        happen exactly once, so a repeated failed send does not rewrite the
+        same name on every message. An unbound account (no Space, so no rooms)
+        still gets the mark — it is about the chat, not about the room.
+        """
+        base = bundle.registry.name_for(chat_id) or name
+        if not bundle.registry.set_deleted(chat_id, True, reason):
+            return False, ""
+        room_id = bundle.registry.room_for(chat_id)
+        if bundle.rooms is None or not room_id or not base:
+            return True, ""
+        renamed = self._gone_name(base, reason)
+        try:
+            ok = await bundle.rooms.set_name(room_id, renamed)
+        except Exception:  # noqa: BLE001 - the mark matters more than the label
+            log.exception("could not rename %s for gone chat %s", room_id, chat_id)
+            return True, ""
+        return True, (renamed if ok is not False else "")
 
     async def _cmd_check(
         self,
@@ -1220,9 +1334,8 @@ class Dispatcher:
                 log.exception("presence check failed for %s", chat_id)
                 continue
             gone = status in ("gone", "deleted")
-            if gone and bundle.registry.set_deleted(chat_id, True):
-                await bundle.rooms.set_name(room_id, self._deleted_name(name))
-                marked.append(f"{name}（{'账户已注销' if status == 'deleted' else '对话已不存在'}）")
+            if gone and (await self._mark_gone(bundle, chat_id, status, name))[0]:
+                marked.append(f"{name}（{_GONE_REASON[status]}）")
             elif not gone and bundle.registry.set_deleted(chat_id, False):
                 await bundle.rooms.set_name(room_id, name)
                 restored.append(name)

@@ -30,10 +30,13 @@ class RoomRegistry:
         # tg chat id (str) -> "user" | "bot" | "group" | "channel". Cached so routing a
         # typed message back to its chat needs no Telegram lookup per message.
         self._kinds: dict[str, str] = {}
-        # Chats whose Telegram side is gone; their room is renamed to say so.
-        # Kept here so the rename happens once, and can be undone if the chat
-        # turns out to be alive after all.
-        self._deleted: set[str] = set()
+        # Chats whose Telegram side is gone -> why ("deleted" = the account was
+        # deactivated, "gone" = the chat no longer exists). Their room is
+        # renamed to say so; the reason is kept because the two read
+        # differently to a person, and because a chat can move from one to the
+        # other. Kept here so the rename happens once, and can be undone if the
+        # chat turns out to be alive after all.
+        self._deleted: dict[str, str] = {}
         self._load()
 
     def room_for(self, chat_id: int | str) -> Optional[str]:
@@ -54,16 +57,29 @@ class RoomRegistry:
         """Whether this chat is currently marked as gone on the Telegram side."""
         return str(chat_id) in self._deleted
 
-    def set_deleted(self, chat_id: int | str, deleted: bool = True) -> bool:
+    def deleted_reason(self, chat_id: int | str) -> str:
+        """"deleted" | "gone" | "" — why the chat is marked, if it is."""
+        return self._deleted.get(str(chat_id), "")
+
+    def set_deleted(
+        self, chat_id: int | str, deleted: bool = True, reason: str = "gone"
+    ) -> bool:
         """Record (or clear) the deleted mark. Returns True if it changed, so
-        the caller only renames the Matrix room when something actually did."""
+        the caller only renames the Matrix room when something actually did.
+
+        A mark that is already there but for a *different* reason counts as a
+        change: a chat first seen as unreachable and later confirmed
+        deactivated should end up with the room name that says so.
+        """
         key = str(chat_id)
-        if deleted == (key in self._deleted):
-            return False
-        if deleted:
-            self._deleted.add(key)
+        if not deleted:
+            if key not in self._deleted:
+                return False
+            del self._deleted[key]
         else:
-            self._deleted.discard(key)
+            if self._deleted.get(key) == reason:
+                return False
+            self._deleted[key] = reason
         self._save()
         return True
 
@@ -119,7 +135,7 @@ class RoomRegistry:
             self._by_room = {v: k for k, v in self._by_chat.items()}
             self._names = {str(k): str(v) for k, v in data.get("names", {}).items()}
             self._kinds = {str(k): str(v) for k, v in data.get("kinds", {}).items()}
-            self._deleted = {str(k) for k in data.get("deleted", [])}
+            self._deleted = _deleted_marks(data.get("deleted"))
         except Exception:  # noqa: BLE001 - a bad file must not stop the bridge
             log.exception("failed to load room registry from %s", self._path)
 
@@ -132,9 +148,24 @@ class RoomRegistry:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(
                     {"rooms": self._by_chat, "names": self._names,
-                     "kinds": self._kinds, "deleted": sorted(self._deleted)},
+                     "kinds": self._kinds,
+                     "deleted": dict(sorted(self._deleted.items()))},
                     fh, ensure_ascii=False, indent=2,
                 )
             os.replace(tmp, self._path)
         except Exception:  # noqa: BLE001
             log.exception("failed to save room registry to %s", self._path)
+
+
+def _deleted_marks(raw) -> dict[str, str]:
+    """Read the deleted marks, tolerating the pre-reason format.
+
+    Registries written before the reason was recorded hold a plain list of chat
+    ids. Those chats really are marked, and their rooms really are renamed, so
+    they are kept — as the weaker "gone", which is all the old file claimed.
+    """
+    if isinstance(raw, dict):
+        return {str(k): str(v) or "gone" for k, v in raw.items()}
+    if isinstance(raw, list):
+        return {str(k): "gone" for k in raw}
+    return {}

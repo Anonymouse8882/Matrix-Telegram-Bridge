@@ -266,6 +266,13 @@ class AccountRouter(Protocol):
         """Sign the account out of Telegram, delete its session and caches, and
         drop it from the list. Destructive, unlike a switch."""
 
+    def set_send_failure_handler(self, handler: Optional[Callable]) -> None:
+        """Register who is told when an account's *queued* send fails for good.
+
+        Called as `handler(tg_id, chat_id, target_name, origin_room, exc)`.
+        Wired by the composition root once the dispatcher exists, and applied
+        to accounts that come online later too."""
+
 
 @runtime_checkable
 class SpaceResolver(Protocol):
@@ -308,3 +315,9 @@ class OutboundSender(Protocol):
         """`origin_room` is the Matrix room the message was typed in, so
         self-destruct can redact the right room (per-chat rooms differ from
         the control room)."""
+
+    def set_failure_handler(self, handler: Optional[Callable]) -> None:
+        """Register who is told when a *deferred* send is given up on.
+
+        Immediate sends report by raising out of `submit`; a queued one fails
+        long after the owner stopped looking, so it needs somewhere to go."""

@@ -87,6 +87,9 @@ class App:
         )
         self.matrix_source.set_handler(self.dispatcher.on_matrix_message)
         self.matrix_source.set_redaction_handler(self.dispatcher.on_redaction)
+        # A send that fails minutes after it was queued has no reply to attach
+        # to, so the dispatcher reports it out of band.
+        self.accounts.set_send_failure_handler(self.dispatcher.on_send_failed)
 
     def _command_prefix(self) -> str:
         return self.state.command_prefix() or self.cfg.options.command_prefix

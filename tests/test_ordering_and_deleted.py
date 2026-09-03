@@ -10,6 +10,7 @@ look like a merely quiet one.
 """
 
 import asyncio
+import json
 
 from types import SimpleNamespace
 
@@ -183,6 +184,10 @@ async def test_check_reports_a_deleted_account_differently():
     await d.on_matrix_message(_mx("!tg check"))
 
     assert "账户已注销" in mx.deliveries[-1][1].text
+    # A deactivated account reads differently from a deleted chat, so it is
+    # marked differently too.
+    assert creator.names == [("!r1:hs", "🗑 小明【已注销】")]
+    assert reg.deleted_reason(111) == "deleted"
 
 
 async def test_check_leaves_a_live_chat_alone():
@@ -250,3 +255,37 @@ async def test_the_deleted_mark_survives_a_restart(tmp_path):
     reg.set_deleted(111, True)
 
     assert RoomRegistry(path).is_deleted(111)
+
+
+async def test_the_reason_survives_a_restart_too(tmp_path):
+    """A room named 【已注销】 must not come back as （已删除） after a restart."""
+    path = str(tmp_path / "rooms.json")
+    reg = RoomRegistry(path)
+    reg.register(111, "!r1:hs", "小明", kind="user")
+    reg.set_deleted(111, True, "deleted")
+
+    assert RoomRegistry(path).deleted_reason(111) == "deleted"
+
+
+async def test_a_mark_written_before_reasons_existed_still_loads(tmp_path):
+    """Registries from an older build hold a bare list of marked chat ids."""
+    path = tmp_path / "rooms.json"
+    path.write_text(json.dumps({
+        "rooms": {"111": "!r1:hs"}, "names": {"111": "小明"},
+        "kinds": {"111": "user"}, "deleted": ["111"],
+    }), encoding="utf-8")
+
+    reg = RoomRegistry(str(path))
+
+    assert reg.is_deleted(111)
+    # Only the weaker claim, because that is all the old file ever made.
+    assert reg.deleted_reason(111) == "gone"
+
+
+async def test_a_chat_can_be_upgraded_from_unreachable_to_deactivated():
+    """Same mark, better reason: the room name has to follow."""
+    reg = RoomRegistry()
+    reg.set_deleted(111, True, "gone")
+
+    assert reg.set_deleted(111, True, "deleted")     # changed -> rename
+    assert not reg.set_deleted(111, True, "deleted")  # unchanged -> leave it

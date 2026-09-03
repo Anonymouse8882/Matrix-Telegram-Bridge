@@ -237,6 +237,10 @@ class AccountManager:
         self._runtimes: dict[int, AccountRuntime] = {}
         self._current: Optional[int] = None
         self._pending: Optional[_PendingLogin] = None
+        # Told when a queued send is given up on, so the dispatcher can explain
+        # it in Matrix. Set after construction: the dispatcher is built from
+        # this manager, so it cannot be handed to it here.
+        self._on_send_failed: Optional[Callable] = None
         # Live references to fire-and-forget cleanup tasks, so the loop's weak
         # reference is not the only one keeping them alive.
         self._closers: set[asyncio.Task] = set()
@@ -361,9 +365,31 @@ class AccountManager:
             on_new_room=self._on_new_room,
         )
         self._runtimes[account.tg_id] = runtime
+        self._arm_failure_reporting(runtime)
         if self._current is None:
             self._current = account.tg_id
         return runtime
+
+    def set_send_failure_handler(self, handler: Optional[Callable]) -> None:
+        """Register who explains a permanently failed queued send.
+
+        Applies to accounts already online and to every one spawned later, so
+        an account logged in at runtime reports failures exactly like one that
+        was there at startup.
+        """
+        self._on_send_failed = handler
+        for runtime in self._runtimes.values():
+            self._arm_failure_reporting(runtime)
+
+    def _arm_failure_reporting(self, runtime: AccountRuntime) -> None:
+        handler = self._on_send_failed
+        if handler is None:
+            runtime.scheduler.set_failure_handler(None)
+            return
+        tg_id = runtime.account.tg_id  # the queue itself does not know whose it is
+        runtime.scheduler.set_failure_handler(
+            lambda chat_id, name, room, exc: handler(tg_id, chat_id, name, room, exc)
+        )
 
     def watched_rooms(self) -> set[str]:
         """Every room the bridge drives, for the Matrix sync filter: each

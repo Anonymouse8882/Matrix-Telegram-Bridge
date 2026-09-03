@@ -127,6 +127,7 @@ Type these in the control room (prefix configurable, default `!tg`):
 | `!tg delay [<fixed> [random]]` | Show or set an outgoing send delay, e.g. `delay 5s 30s` (`0` disables) |
 | `!tg selfdestruct [<kind> <duration>]` | Auto-delete your relayed messages on Telegram after a TTL, per kind (the Matrix copy is marked, not deleted) |
 | `!tg delMsg <target\|AllUser\|AllGroup\|AllChannel\|AllChat>` | Delete **your own** messages — irreversible, needs a `confirm` token (no target needed in a per-chat room, see below) |
+| `!tg check [target\|all]` | Check whether chats still exist on Telegram: a deactivated account marks its room `【已注销】`, a vanished chat `（已删除）`; the name is restored if it comes back |
 | `!tg help` | Show help (in Chinese, as are the in-room replies) |
 | `@<target> <message>` | Send one message to `<target>` without changing the current one |
 | *(plain message / image)* | Send to the current target |

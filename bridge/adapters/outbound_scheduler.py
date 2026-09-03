@@ -28,6 +28,7 @@ from ..core.models import MediaRef, MessageKind, OutboundMessage, TelegramTarget
 from ..core.ports import MediaFetcher, MessageExpirer, MessageSink, StickerQuoter
 from ..core.replymap import ReplyMap, ReplyRef
 from ..core.state import FORWARD_QUOTLY, BridgeState
+from ..core.tgerrors import is_permanent
 from .jsonfile import load_json_list, save_json_list
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,11 @@ log = logging.getLogger(__name__)
 # refused one must not clog the queue forever.
 _MAX_ATTEMPTS = 5
 _RETRY_BASE = 30.0  # seconds; attempt n waits n * this
+
+# Told about a queued send that will never go out: (chat_id, target_name,
+# origin_room, exception). Optional — the queue runs fine without one, the
+# owner just isn't told.
+FailureHandler = Callable[[int, str, str, BaseException], object]
 
 
 class OutboundScheduler:
@@ -70,7 +76,17 @@ class OutboundScheduler:
         self._pending: list[dict] = []
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()  # set on submit, so short delays are exact
+        self._on_failure: Optional[FailureHandler] = None
         self._pending = load_json_list(self._path)
+
+    def set_failure_handler(self, handler: Optional[FailureHandler]) -> None:
+        """Who to tell when a queued send fails for good.
+
+        Wired after construction because the thing that reports it (the
+        dispatcher, which owns the Matrix replies and the room map) is built
+        after the accounts it dispatches to.
+        """
+        self._on_failure = handler
 
     def _effective_send_at(self, at: Optional[float]) -> float:
         if at is not None:
@@ -224,7 +240,16 @@ class OutboundScheduler:
                 chat_id, dialog_kind, message, origin, name, room = _decode(p)
                 await self._deliver(chat_id, dialog_kind, message, origin, name, room)
                 finished.add(id(p))
-            except Exception:  # noqa: BLE001 - retry transient failures
+            except Exception as exc:  # noqa: BLE001 - retry transient failures
+                if is_permanent(exc):
+                    # The peer is gone, not busy. Four more attempts over the
+                    # next ten minutes would fail identically, and the owner
+                    # would never learn the message wasn't delivered.
+                    log.warning("scheduled send for %s cannot be delivered: %s",
+                                p.get("chat_id"), exc)
+                    finished.add(id(p))
+                    await self._report_failure(p, exc)
+                    continue
                 attempts = int(p.get("attempts", 0)) + 1
                 if attempts >= _MAX_ATTEMPTS:
                     log.exception(
@@ -232,6 +257,7 @@ class OutboundScheduler:
                         p.get("chat_id"), attempts,
                     )
                     finished.add(id(p))
+                    await self._report_failure(p, exc)
                 else:
                     log.exception(
                         "scheduled send for %s failed (attempt %d/%d); will retry",
@@ -242,6 +268,25 @@ class OutboundScheduler:
         async with self._lock:
             self._pending = [p for p in self._pending if id(p) not in finished]
             self._save()
+
+    async def _report_failure(self, item: dict, exc: BaseException) -> None:
+        """Hand a dropped send to the failure handler. Best-effort by design:
+        the queue has already moved on, and a broken reporter must not take the
+        sweeper down with it."""
+        if self._on_failure is None:
+            return
+        try:
+            result = self._on_failure(
+                int(item.get("chat_id", 0)),
+                item.get("target_name") or "",
+                item.get("origin_room") or self._control_room,
+                exc,
+            )
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            log.exception("could not report the failed send for %s",
+                          item.get("chat_id"))
 
     # -- persistence ---------------------------------------------------------
 
